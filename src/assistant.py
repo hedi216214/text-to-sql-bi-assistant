@@ -1,18 +1,20 @@
 """Ask business questions in plain English or French; get SQL and the answer.
 
 Flow:
-    question → prompt with the warehouse schema → LLM writes SQL
+    question → the most similar solved examples are retrieved from a vector database (RAG)
+    → prompt with the warehouse schema and those examples → LLM writes SQL
     → guard checks and runs it read-only → on error, the error goes back to the
       LLM for one correction attempt → table of results
 
 Usage:
     python src/assistant.py "What was the revenue by category in 2025?"
     python src/assistant.py "Quel magasin a la meilleure marge ?"
+    python src/assistant.py --no-rag "..."      # without retrieved examples
 """
 import argparse
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -52,34 +54,46 @@ class Answer:
     result: QueryResult | None
     attempts: int
     error: str | None = None
+    examples: list = field(default_factory=list)   # examples retrieved for the prompt
 
 
 class Assistant:
     def __init__(self, db_path: Path = DB_PATH, llm: Callable[[list[dict]], str] = chat,
-                 max_attempts: int = 2):
+                 max_attempts: int = 2, retriever=None, k: int = 3):
+        """retriever: an ExampleRetriever (see retriever.py), or None for no examples."""
         self.con = connect_readonly(db_path)
         self.llm = llm
         self.max_attempts = max_attempts
+        self.retriever = retriever
+        self.k = k
         self.system = f"{RULES}\n\nSchema:\n{schema_text(db_path)}"
 
+    def system_prompt(self, question: str) -> tuple[str, list]:
+        if self.retriever is None:
+            return self.system, []
+        from retriever import format_examples
+        examples = self.retriever.search(question, k=self.k)
+        return f"{self.system}\n\n{format_examples(examples)}", examples
+
     def ask(self, question: str) -> Answer:
-        messages = [{"role": "system", "content": self.system},
+        system, examples = self.system_prompt(question)
+        messages = [{"role": "system", "content": system},
                     {"role": "user", "content": question}]
         sql, error = "", None
         for attempt in range(1, self.max_attempts + 1):
             reply = self.llm(messages)
             sql = extract_sql(reply)
             try:
-                return Answer(question, sql, run_safe(self.con, sql), attempt)
+                return Answer(question, sql, run_safe(self.con, sql), attempt, examples=examples)
             except UnsafeQuery as e:
                 # Never ask the model to work around the guard: stop here.
-                return Answer(question, sql, None, attempt, error=str(e))
+                return Answer(question, sql, None, attempt, error=str(e), examples=examples)
             except sqlite3.Error as e:
                 error = str(e)
                 messages += [{"role": "assistant", "content": reply},
                              {"role": "user", "content": f"The query failed with: {error}\n"
                               "Fix it and answer with the corrected SQL only."}]
-        return Answer(question, sql, None, self.max_attempts, error=error)
+        return Answer(question, sql, None, self.max_attempts, error=error, examples=examples)
 
 
 def format_table(res: QueryResult, max_rows: int = 20) -> str:
@@ -97,6 +111,18 @@ def format_table(res: QueryResult, max_rows: int = 20) -> str:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("question")
-    a = Assistant().ask(ap.parse_args().question)
+    ap.add_argument("--no-rag", action="store_true", help="do not add retrieved examples")
+    ap.add_argument("-k", type=int, default=3, help="number of examples to retrieve")
+    args = ap.parse_args()
+    retriever = None
+    if not args.no_rag:
+        from retriever import ExampleRetriever
+        retriever = ExampleRetriever()
+    a = Assistant(retriever=retriever, k=args.k).ask(args.question)
+    if a.examples:
+        print("Retrieved examples:")
+        for e in a.examples:
+            print(f"  {e.score:.2f}  {e.question}")
+        print()
     print(f"SQL ({a.attempts} attempt{'s' if a.attempts > 1 else ''}):\n{a.sql}\n")
     print(format_table(a.result) if a.result else f"Error: {a.error}")
