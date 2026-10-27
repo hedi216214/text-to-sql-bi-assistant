@@ -3,7 +3,10 @@ reference SQL? Column names and (unless the question needs it) row order are ign
 
 Usage:
     python eval/run_eval.py                 # uses the LLM set in LLM_* env vars
+    python eval/run_eval.py --rag           # same, with retrieved few-shot examples (RAG)
     python eval/run_eval.py --oracle        # sanity check: feeds the reference SQL back
+
+Run it with and without --rag to measure what retrieval adds for your model.
 
 Writes eval/results.json with one line per question.
 """
@@ -47,7 +50,7 @@ def same(gold_rows, pred_rows, q) -> bool:
     return True
 
 
-def main(oracle: bool):
+def main(oracle: bool, rag: bool, k: int):
     questions = json.loads((ROOT / "eval" / "questions.json").read_text(encoding="utf-8"))
     gold_con = connect_readonly(ROOT / "warehouse" / "retail.db")
     by_text = {q["question"]: q["sql"] for q in questions}
@@ -55,7 +58,12 @@ def main(oracle: bool):
     def oracle_llm(messages):
         return f"```sql\n{by_text[messages[1]['content']]}\n```"
 
-    assistant = Assistant(llm=oracle_llm) if oracle else Assistant()
+    retriever = None
+    if rag:
+        from retriever import ExampleRetriever
+        retriever = ExampleRetriever()
+    llm_kwargs = {"llm": oracle_llm} if oracle else {}
+    assistant = Assistant(retriever=retriever, k=k, **llm_kwargs)
     results, score = [], Counter()
     for q in questions:
         gold = run_safe(gold_con, q["sql"]).rows
@@ -64,18 +72,23 @@ def main(oracle: bool):
         score[q["level"]] += ok
         score["total"] += ok
         results.append({"id": q["id"], "level": q["level"], "correct": ok,
-                        "attempts": a.attempts, "sql": a.sql, "error": a.error})
+                        "attempts": a.attempts, "sql": a.sql, "error": a.error,
+                        "examples": [e.question for e in a.examples]})
         print(f"[{'OK ' if ok else 'BAD'}] {q['id']:2d} {q['level']:6s} {q['question']}")
 
     levels = Counter(q["level"] for q in questions)
     summary = {lvl: f"{score[lvl]}/{n}" for lvl, n in levels.items()}
     summary["total"] = f"{score['total']}/{len(questions)}"
-    (ROOT / "eval" / "results.json").write_text(json.dumps(
-        {"summary": summary, "results": results}, indent=2, ensure_ascii=False))
-    print("\nExecution accuracy:", summary)
+    out = ROOT / "eval" / ("results_rag.json" if rag else "results.json")
+    out.write_text(json.dumps({"rag": rag, "k": k if rag else 0, "summary": summary,
+                               "results": results}, indent=2, ensure_ascii=False))
+    print(f"\nExecution accuracy{' with RAG' if rag else ''}:", summary)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--oracle", action="store_true")
-    main(ap.parse_args().oracle)
+    ap.add_argument("--rag", action="store_true", help="add retrieved few-shot examples")
+    ap.add_argument("-k", type=int, default=3)
+    args = ap.parse_args()
+    main(args.oracle, args.rag, args.k)
