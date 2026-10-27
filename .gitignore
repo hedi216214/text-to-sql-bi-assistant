@@ -4,4 +4,5 @@ __pycache__/
 .pytest_cache/
 .env
 warehouse/retail.db
-eval/results.json
+eval/results*.json
+.chroma/
