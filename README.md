@@ -1,5 +1,7 @@
 # Text-to-SQL BI assistant
 
+![Python](https://img.shields.io/badge/Python-3-blue) ![SQLite](https://img.shields.io/badge/Warehouse-SQLite%20star%20schema-lightgrey) ![RAG](https://img.shields.io/badge/RAG-Chroma-orange) ![Tests](https://img.shields.io/badge/tests-pytest-green)
+
 Ask a business question in plain English or French ("Quel magasin a la meilleure marge ?") and get the SQL query and the answer, computed on a retail data warehouse. Similar solved examples are retrieved from a vector database (RAG), an LLM writes the SQL, and a three-layer guard makes sure it can only **read** the warehouse.
 
 ## Why this project
@@ -112,3 +114,10 @@ tests/                         23 tests with scripted fake LLMs, fully offline
 - A semicolon inside a text value is refused by the one-statement check. That is a deliberate trade-off for simplicity.
 - The retrieved examples guide the model but do not bypass the guard: every query still goes through the same checks.
 - Next: a small web UI (Streamlit) with an automatic chart, adding validated user questions to the example bank, and a PostgreSQL version of the warehouse.
+
+## Author
+
+**CHEBIL Med Hedi**, final-year engineering student in Business Intelligence & Big Data at ESPRIT (Tunis).
+Looking for a **6-month end-of-study internship from January 2027** in Data / BI / AI (Europe or remote).
+
+[LinkedIn](https://www.linkedin.com/in/mohamed-hedi-chebil-817a49404) · [Portfolio](https://hedi216214.github.io) · chebilmedhedi0@gmail.com
